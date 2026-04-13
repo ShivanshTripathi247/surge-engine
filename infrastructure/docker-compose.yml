@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  # 1. The PostgreSQL Database with pgvector extension
+  postgres-vector:
+    image: pgvector/pgvector:pg16
+    container_name: search-db
+    environment:
+      POSTGRES_USER: search_admin
+      POSTGRES_PASSWORD: supersecretpassword
+      POSTGRES_DB: search_engine
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - search-net
+    restart: unless-stopped
+
+  # 2. The Redis In-Memory Queue for the Crawler
+  redis-queue:
+    image: redis:7-alpine
+    container_name: search-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - search-net
+    restart: unless-stopped
+
+volumes:
+  pgdata: # Persistent storage so we don't lose crawled data on restart
+
+networks:
+  search-net:
+    driver: bridge # Allows our future microservices to talk to the DBs by container name
