@@ -1,6 +1,6 @@
-# Surge
+# Surge Engine
 
-A full-stack web search engine over 10,000 Wikipedia articles — hybrid lexical + semantic ranking, streamed responses, AI summaries.
+A full-stack web search engine over 10,000 Wikipedia articles: hybrid lexical + semantic ranking, streamed responses, AI summaries.
 
 ![Node.js](https://img.shields.io/badge/Node.js-20-339933?logo=node.js&logoColor=white)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
@@ -22,7 +22,7 @@ A full-stack web search engine over 10,000 Wikipedia articles — hybrid lexical
 
 ## What it is
 
-Surge crawls Wikipedia, builds an inverted index and a PageRank graph, embeds every document with a 384-dimensional sentence transformer, and serves hybrid BM25 + cosine + PageRank rankings behind a streaming SSE API and a React SPA. Queries are spell-corrected, intent-classified, and expanded with synonyms before retrieval; the top three results are summarised by an LLM in real time, with the result page becoming interactive before the summary lands. Six containers run on a single Compose network; only nginx (port 80) and the API (port 3001) are exposed. The ranking pipeline returns the first organic result in under two seconds over the full corpus. Every layer — crawler, indexer, ranking engine, and frontend — is built from scratch.
+Surge crawls Wikipedia, builds an inverted index and a PageRank graph, embeds every document with a 384-dimensional sentence transformer, and serves hybrid BM25 + cosine + PageRank rankings behind a streaming SSE API and a React SPA. Queries are spell-corrected, intent-classified, and expanded with synonyms before retrieval, the top three results are summarised by an LLM in real time, with the result page becoming interactive before the summary lands. Six containers run on a single Compose network, only nginx (port 80) and the API (port 3001) are exposed. The ranking pipeline returns the first organic result in under two seconds over the full corpus. Every layer: crawler, indexer, ranking engine, and frontend: is built from scratch.
 
 ## Architecture
 
@@ -60,23 +60,23 @@ flowchart LR
 
 ## Key engineering decisions
 
-- **Hybrid ranking with per-query normalisation** — BM25, cosine, and PageRank merged at `0.4 / 0.4 / 0.2`.
+- **Hybrid ranking with per-query normalisation**: BM25, cosine, and PageRank merged at `0.4 / 0.4 / 0.2`.
   Each signal is min-max scaled per query because the raw scales are incomparable and the weights are only meaningful on a common range.
 
-- **Persistent HTTP embedder, not per-request subprocess** — sentence-transformers loaded once at boot.
-  Spawning the model per query would add ~3 seconds of cold-start; the embedder runs as its own container and the MiniLM weights are baked into the image.
+- **Persistent HTTP embedder, not per-request subprocess**: sentence-transformers loaded once at boot.
+  Spawning the model per query would add ~3 seconds of cold-start, the embedder runs as its own container and the MiniLM weights are baked into the image.
 
-- **Title trie for autocomplete, inverted index for spellcheck** — two different data structures, two different jobs.
-  Suggestions should be real article titles the user can complete; spell correction needs the full term frequency dictionary to find dominant neighbours.
+- **Title trie for autocomplete, inverted index for spellcheck**: two different data structures, two different jobs.
+  Suggestions should be real article titles the user can complete, spell correction needs the full term frequency dictionary to find dominant neighbours.
 
-- **Frequency-dominant spellcheck** — corrections fire when a near-neighbour is at least ten times more common.
-  Wikipedia content contains misspellings verbatim, so a naive "if-in-dictionary, keep it" rule never corrects anything; dominance over the typed token is the right signal.
+- **Frequency-dominant spellcheck**: corrections fire when a near-neighbour is at least ten times more common.
+  Wikipedia content contains misspellings verbatim, so a naive "if-in-dictionary, keep it" rule never corrects anything, dominance over the typed token is the right signal.
 
-- **SSE streaming with per-stage events** — `spellcheck → expansion → results → summary → done`.
-  Results render the moment retrieval finishes; the LLM-generated summary fills in behind a shimmer, so perceived latency tracks retrieval, not generation.
+- **SSE streaming with per-stage events**: `spellcheck → expansion → results → summary → done`.
+  Results render the moment retrieval finishes, the LLM-generated summary fills in behind a shimmer, so perceived latency tracks retrieval, not generation.
 
-- **PageRank in the indexer, not the API** — converged offline, written to a flat table.
-  Iterative power method over 10k nodes is cheap once but unacceptable per query; the API does a single `WHERE url = ANY($1)` lookup at request time.
+- **PageRank in the indexer, not the API**: converged offline, written to a flat table.
+  Iterative power method over 10k nodes is cheap once but unacceptable per query, the API does a single `WHERE url = ANY($1)` lookup at request time.
 
 ## Search pipeline
 
@@ -134,5 +134,4 @@ docker compose up --build
 Open <http://localhost>.
 
 ---
-
-Built by [Your Name] · [LinkedIn URL] · [Email]
+[LinkedIn](https://www.linkedin.com/in/shivanshtripathii/) · <shivansht06@gmail.com>
