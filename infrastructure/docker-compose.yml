@@ -1,36 +1,102 @@
-version: '3.8'
-
 services:
-  # 1. The PostgreSQL Database with pgvector extension
-  postgres-vector:
+  # Postgres + pgvector — primary data store for documents, links, index, vectors, query log.
+  postgres:
     image: pgvector/pgvector:pg16
     container_name: search-db
     environment:
       POSTGRES_USER: search_admin
       POSTGRES_PASSWORD: supersecretpassword
       POSTGRES_DB: search_engine
-    ports:
-      - "5432:5432"
+    ports: ["5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - search-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U search_admin -d search_engine"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [search-net]
     restart: unless-stopped
 
-  # 2. The Redis In-Memory Queue for the Crawler
-  redis-queue:
+  # Redis — crawler queue, autocomplete trie mirror, pub/sub for new docs.
+  redis:
     image: redis:7-alpine
     container_name: search-redis
-    ports:
-      - "6379:6379"
-    networks:
-      - search-net
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [search-net]
+    restart: unless-stopped
+
+  # Embedder — Python HTTP service hosting sentence-transformers (port 5001 internal only).
+  embedder:
+    build: ../vectorizer-ai
+    container_name: search-embedder
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5001/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [search-net]
+    restart: unless-stopped
+
+  # API — Express ranking + query pipeline.
+  api:
+    build: ../api
+    container_name: search-api
+    env_file:
+      - ../api/.env
+    environment:
+      DB_CONNECTION_STRING: postgres://search_admin:supersecretpassword@postgres:5432/search_engine
+      REDIS_URL: redis://redis:6379
+      EMBED_URL: http://embedder:5001
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3:8b}
+      PORT: "3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      embedder: { condition: service_healthy }
+    ports: ["3001:3001"]
+    networks: [search-net]
+    restart: unless-stopped
+
+  # C++ indexer — batch BM25/PageRank pass, then stays subscribed to Redis pubsub.
+  indexer:
+    build: ../indexer-cpp
+    container_name: search-indexer
+    environment:
+      PGHOST: postgres
+      PGUSER: search_admin
+      PGPASSWORD: supersecretpassword
+      PGDATABASE: search_engine
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    networks: [search-net]
+    restart: unless-stopped
+
+  # Frontend — nginx serving the Vite build + proxying /api to api.
+  client:
+    build: ../frontend
+    container_name: search-client
+    depends_on: [api]
+    ports: ["80:80"]
+    networks: [search-net]
     restart: unless-stopped
 
 volumes:
-  pgdata: # Persistent storage so we don't lose crawled data on restart
+  pgdata:
 
 networks:
   search-net:
-    driver: bridge # Allows our future microservices to talk to the DBs by container name
+    driver: bridge

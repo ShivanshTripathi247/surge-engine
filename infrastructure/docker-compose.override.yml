@@ -1,0 +1,12 @@
+services:
+  # Local dev: mount sources for fast iteration. Vite/nodemon would normally
+  # take over here; these mounts let you edit code without rebuilding images.
+  api:
+    volumes:
+      - ../api/src:/app/src:ro
+  client:
+    volumes:
+      - ../frontend/src:/app/src:ro
+  embedder:
+    volumes:
+      - ../vectorizer-ai/embed_server.py:/app/embed_server.py:ro
