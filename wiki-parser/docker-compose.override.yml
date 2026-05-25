@@ -1,0 +1,45 @@
+# Tuned for the inverted-index batch pass.
+#
+# The C++ indexer runs at ~6 GiB peak RSS (flush threshold) plus the rest of
+# the desktop (VS Code, browser, OS). On a 14 GiB / no-swap host that leaves
+# ~3 GiB for Postgres — so we cannot use the base compose's 4 GB
+# shared_buffers without risking OOM. We also can't use the PageRank
+# override's 512 MB, because the indexer's flush is upsert-heavy and the
+# hot inverted_index btree + JSONB rows trash the cache at 512 MB.
+#
+# 2 GB shared_buffers + 8 GB max_wal_size is the sweet spot: large enough
+# to keep the hot index pages cached during a flush, small enough to leave
+# headroom on a 14 GiB host. fsync/synchronous_commit stay off because this
+# is a local ingest staging DB — power loss means re-ingesting, not data
+# corruption that matters.
+#
+# Restore the PageRank-tuned override before running PageRank:
+#   mv docker-compose.override.yml docker-compose.override.yml.indexer.bak
+#   mv docker-compose.override.yml.pagerank.bak docker-compose.override.yml
+services:
+  wiki-pg:
+    shm_size: 512m
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=2GB"
+      - "-c"
+      - "effective_cache_size=4GB"
+      - "-c"
+      - "work_mem=32MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "wal_buffers=32MB"
+      - "-c"
+      - "max_wal_size=8GB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "fsync=off"
+      - "-c"
+      - "full_page_writes=off"
+      - "-c"
+      - "max_connections=20"

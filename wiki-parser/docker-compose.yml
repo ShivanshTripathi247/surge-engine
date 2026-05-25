@@ -1,0 +1,70 @@
+# Local Postgres for fast wiki ingestion.
+#
+# Uses ../infrastructure/wiki-schema.sql for table definitions (mounted into
+# /docker-entrypoint-initdb.d, runs once on first container boot).
+#
+# Host port 5433 (not 5432) to avoid clashing with the production search-db
+# container in infrastructure/docker-compose.yml.
+#
+# Start:    docker compose -f wiki-parser/docker-compose.yml up -d
+# Logs:     docker compose -f wiki-parser/docker-compose.yml logs -f
+# Stop:     docker compose -f wiki-parser/docker-compose.yml down
+# Wipe:     docker compose -f wiki-parser/docker-compose.yml down -v
+#
+# AGGRESSIVE TUNING NOTE
+# The -c flags override the conservative ALTER SYSTEM values in the schema.
+# fsync=off and full_page_writes=off trade durability for ~3-5x ingest speed
+# on local SSD. Safe here because the local DB is an ingest staging area —
+# if the host power-cycles mid-run we just re-ingest. NEVER use these in
+# prod. They get reset to default after the pg_dump -> server migration.
+
+services:
+  wiki-pg:
+    image: pgvector/pgvector:pg16
+    container_name: wiki-pg-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: surge_admin
+      POSTGRES_PASSWORD: local_dev_pwd
+      POSTGRES_DB: surge_wiki
+    ports:
+      - "5433:5432"
+    volumes:
+      - wiki-pgdata:/var/lib/postgresql/data
+      - ../infrastructure/wiki-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    # Larger /dev/shm so Postgres can use big shared_buffers without
+    # 'could not resize shared memory segment' errors.
+    shm_size: 1gb
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=4GB"
+      - "-c"
+      - "effective_cache_size=8GB"
+      - "-c"
+      - "work_mem=128MB"
+      - "-c"
+      - "maintenance_work_mem=2GB"
+      - "-c"
+      - "wal_buffers=64MB"
+      - "-c"
+      - "max_wal_size=16GB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "fsync=off"
+      - "-c"
+      - "full_page_writes=off"
+      - "-c"
+      - "max_connections=50"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U surge_admin -d surge_wiki"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  wiki-pgdata:
+    name: wiki-pgdata

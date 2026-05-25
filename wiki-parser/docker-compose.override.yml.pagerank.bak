@@ -1,0 +1,38 @@
+# TEMPORARY override for the PageRank run.
+#
+# The base compose tunes Postgres for write-heavy bulk ingest
+# (shared_buffers=4GB, work_mem=128MB, fsync=off, etc). PageRank does the
+# opposite workload — one big sequential scan of `links` plus a small batched
+# write to `pagerank` — and the Python side needs ~5GB RSS for the CSR matrix
+# and URL dict. With the ingest-tuned config the OS only has ~3GB free, which
+# is not enough.
+#
+# This override shrinks shared_buffers and shm_size so Python has room to run.
+# Remove this file (or `mv` it aside) to restore the ingest config.
+services:
+  wiki-pg:
+    shm_size: 256m
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=2GB"
+      - "-c"
+      - "work_mem=32MB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "max_wal_size=2GB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "fsync=off"
+      - "-c"
+      - "full_page_writes=off"
+      - "-c"
+      - "max_connections=20"
