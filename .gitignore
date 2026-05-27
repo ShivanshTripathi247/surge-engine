@@ -1,7 +1,3 @@
 .env
 node_modules
 build
-**/__pycache/
-.venv
-*.bz2
-**/logs

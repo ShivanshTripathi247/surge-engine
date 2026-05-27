@@ -18,17 +18,17 @@
 #   mv docker-compose.override.yml.pagerank.bak docker-compose.override.yml
 services:
   wiki-pg:
-    shm_size: 512m
+    shm_size: 10gb
     command:
       - "postgres"
       - "-c"
-      - "shared_buffers=2GB"
+      - "shared_buffers=4GB"
       - "-c"
-      - "effective_cache_size=4GB"
+      - "effective_cache_size=8GB"
       - "-c"
-      - "work_mem=32MB"
+      - "work_mem=256MB"
       - "-c"
-      - "maintenance_work_mem=512MB"
+      - "maintenance_work_mem=6GB"
       - "-c"
       - "wal_buffers=32MB"
       - "-c"

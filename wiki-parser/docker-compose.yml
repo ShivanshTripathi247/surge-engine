@@ -34,7 +34,7 @@ services:
       - ../infrastructure/wiki-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     # Larger /dev/shm so Postgres can use big shared_buffers without
     # 'could not resize shared memory segment' errors.
-    shm_size: 1gb
+    shm_size: 10gb
     command:
       - "postgres"
       - "-c"
@@ -42,9 +42,9 @@ services:
       - "-c"
       - "effective_cache_size=8GB"
       - "-c"
-      - "work_mem=128MB"
+      - "work_mem=256MB"
       - "-c"
-      - "maintenance_work_mem=2GB"
+      - "maintenance_work_mem=6GB"
       - "-c"
       - "wal_buffers=64MB"
       - "-c"
