@@ -1,13 +1,15 @@
 // Dictionary-backed spellcheck with Damerau-Levenshtein (built from scratch).
+// At 10M+ terms the full inverted_index is too big and too slow to load every
+// boot, so we cap the dictionary to the top-N most common terms by document
+// frequency. SPELLCHECK_LIMIT=0 lifts the cap.
 const pool = require("../db");
 
-// Stopwords stripped by the indexer's tokenizer; never "correct" them.
 const STOPWORDS = new Set("a an and are as at be but by for from has have he her his i in is it its of on or our she so that the their them they this to was we were what when where which who why will with you your".split(" "));
 
-const dict = new Map();          // term -> frequency
-const byLength = new Map();      // length -> [terms]
+const dict = new Map();       // term -> frequency proxy
+const byLength = new Map();   // length -> [terms]
 
-// Compute Damerau-Levenshtein distance with adjacent-transposition.
+// Damerau-Levenshtein with adjacent-transposition.
 function damerauLevenshtein(a, b) {
   const al = a.length, bl = b.length;
   if (Math.abs(al - bl) > 2) return 3;
@@ -26,14 +28,20 @@ function damerauLevenshtein(a, b) {
   return d[al][bl];
 }
 
-// Load dictionary from inverted_index with aggregated frequencies.
+// Load top-N terms by document frequency (number of postings keys).
 async function init() {
-  const sql = `
-    SELECT term,
-           (SELECT COALESCE(SUM((v)::int), 0)
-              FROM jsonb_each_text(postings) AS j(k, v)) AS freq
-    FROM inverted_index`;
-  const { rows } = await pool.query(sql);
+  const limit = Number(process.env.SPELLCHECK_LIMIT || 500_000);
+  console.log(`[spellcheck] loading top ${limit ? limit.toLocaleString() : "ALL"} terms by document frequency...`);
+  const sql = limit > 0
+    ? `SELECT term,
+              (SELECT count(*) FROM jsonb_object_keys(postings)) AS freq
+         FROM inverted_index
+         ORDER BY 2 DESC
+         LIMIT $1`
+    : `SELECT term,
+              (SELECT count(*) FROM jsonb_object_keys(postings)) AS freq
+         FROM inverted_index`;
+  const { rows } = limit > 0 ? await pool.query(sql, [limit]) : await pool.query(sql);
   for (const r of rows) {
     const f = Number(r.freq) || 0;
     if (f <= 0) continue;
@@ -42,12 +50,10 @@ async function init() {
     if (!byLength.has(l)) byLength.set(l, []);
     byLength.get(l).push(r.term);
   }
-  console.log(`[spellcheck] dictionary loaded: ${dict.size} terms`);
+  console.log(`Spellcheck dictionary loaded: ${dict.size.toLocaleString()} terms`);
 }
 
-// Find best in-dict correction within edit distance <=2, freq-weighted.
-// Even when `word` is in the dictionary, prefer a near-neighbor that is
-// >=10x more frequent — Wikipedia content contains the typos verbatim.
+// Prefer a near-neighbour when it's ≥10× more frequent than the typed word.
 const FREQ_DOMINANCE = 10;
 function bestCorrection(word) {
   const selfFreq = dict.get(word) || 0;
@@ -74,7 +80,7 @@ function bestCorrection(word) {
   return bestNeighbor;
 }
 
-// Correct each token in a query; returns {corrected, wasChanged, original}.
+// Correct each token; returns { original, corrected, wasChanged }.
 function correct(query) {
   const tokens = query.match(/[A-Za-z0-9]+|\s+|[^A-Za-z0-9\s]+/g) || [];
   let changed = false;

@@ -1,22 +1,33 @@
-// In-memory prefix Trie over document titles. Suggestions rank shorter-first.
+// In-memory prefix Trie over the top-N article titles ranked by PageRank.
+// Mirrors to a Redis sorted set so cold starts don't have to re-query Postgres.
+//
+// Redis mirror note: ZRANGEBYLEX requires every element to share the same
+// score, so the `autocomplete_titles` ZSET uses score=0 with the lowercased
+// title as the member. PageRank ordering lives in the in-memory Trie via
+// node.priority (higher = preferred). The Redis fallback returns lexicographic
+// prefix matches without PR re-ranking — acceptable because the Trie covers
+// every prefix we expect, and Redis is only the cold-start backup.
 const pool = require("../db");
 const redis = require("../redis");
+
 const REDIS_KEY = "autocomplete_titles";
+const DEFAULT_LIMIT = 500_000;
+const REDIS_BATCH = 10_000;
 
 class TrieNode {
   constructor() {
     this.children = new Map();
     this.isEndOfWord = false;
-    this.length = 0;      // length of the stored title (lower = better)
-    this.word = "";       // the full title
+    this.priority = 0;   // higher = better (we store PageRank)
+    this.word = "";      // original-case title
   }
 }
 
 class Trie {
   constructor() { this.root = new TrieNode(); this.size = 0; }
 
-  // Insert a full title (case-folded for matching).
-  insert(title) {
+  // Insert a title with a priority (PageRank score).
+  insert(title, priority) {
     if (!title) return;
     const key = title.toLowerCase();
     let node = this.root;
@@ -27,16 +38,17 @@ class Trie {
     if (!node.isEndOfWord) this.size++;
     node.isEndOfWord = true;
     node.word = title;
-    node.length = title.length;
+    node.priority = priority;
   }
 
   // DFS collect every title in the subtree rooted at `node`.
-  collect(node, results) {
-    if (node.isEndOfWord) results.push({ word: node.word, length: node.length });
-    for (const child of node.children.values()) this.collect(child, results);
+  collect(node, results, cap) {
+    if (results.length > cap * 4) return; // soft early-exit
+    if (node.isEndOfWord) results.push({ word: node.word, priority: node.priority });
+    for (const child of node.children.values()) this.collect(child, results, cap);
   }
 
-  // Return up to 8 matching titles for a prefix, shorter titles first.
+  // Return up to 8 matching titles for a prefix, highest PageRank first.
   search(prefix) {
     const key = (prefix || "").toLowerCase();
     let node = this.root;
@@ -45,8 +57,8 @@ class Trie {
       node = node.children.get(ch);
     }
     const results = [];
-    this.collect(node, results);
-    results.sort((a, b) => a.length - b.length || a.word.localeCompare(b.word));
+    this.collect(node, results, 8);
+    results.sort((a, b) => b.priority - a.priority || a.word.localeCompare(b.word));
     return results.slice(0, 8).map((r) => r.word);
   }
 }
@@ -58,26 +70,51 @@ async function loadFromRedis() {
   try {
     const exists = await redis.exists(REDIS_KEY);
     if (!exists) return false;
+    // No PR scores in the lex-ordered ZSET; rehydrate the Trie with priority=0
+    // (lexicographic fallback is fine when warming from cache).
     const titles = await redis.zrange(REDIS_KEY, 0, -1);
-    for (const t of titles) trie.insert(t);
-    console.log(`[trie] loaded ${trie.size} titles from Redis`);
+    for (const t of titles) trie.insert(t, 0);
+    console.log(`Trie built from Redis cache: ${trie.size.toLocaleString()} titles loaded`);
     return true;
-  } catch (e) { console.warn("[trie] redis load failed:", e.message); return false; }
+  } catch (e) {
+    console.warn("[trie] redis load failed:", e.message);
+    return false;
+  }
 }
 
-// Load every non-null title from documents; mirror to Redis with length as score.
+// Load top-N titles by PageRank from Postgres and mirror to Redis.
 async function loadFromPostgres() {
+  const limit = Number(process.env.TRIE_LIMIT || DEFAULT_LIMIT);
+  console.log(`[trie] loading top ${limit.toLocaleString()} titles by PageRank...`);
   const { rows } = await pool.query(
-    "SELECT title FROM documents WHERE title IS NOT NULL AND title <> ''"
+    `SELECT d.title, p.score
+       FROM documents d
+       JOIN pagerank p ON p.url = d.url
+       WHERE d.title IS NOT NULL AND d.title <> ''
+       ORDER BY p.score DESC
+       LIMIT $1`,
+    [limit]
   );
-  const pipe = redis.pipeline();
-  pipe.del(REDIS_KEY);
-  for (const r of rows) {
-    trie.insert(r.title);
-    pipe.zadd(REDIS_KEY, r.title.length, r.title);
+  console.log(`[trie] Postgres returned ${rows.length.toLocaleString()} rows`);
+
+  for (const r of rows) trie.insert(r.title, Number(r.score) || 0);
+  console.log(`Trie built: ${trie.size.toLocaleString()} titles loaded`);
+
+  // Mirror to Redis as a lex-ordered ZSET (all scores = 0).
+  try {
+    await redis.del(REDIS_KEY);
+    let added = 0;
+    for (let i = 0; i < rows.length; i += REDIS_BATCH) {
+      const slice = rows.slice(i, i + REDIS_BATCH);
+      const args = [];
+      for (const r of slice) { args.push(0, r.title.toLowerCase()); }
+      await redis.zadd(REDIS_KEY, ...args);
+      added += slice.length;
+    }
+    console.log(`Redis mirror: ${added.toLocaleString()} titles synced`);
+  } catch (e) {
+    console.warn("[trie] redis mirror failed:", e.message);
   }
-  try { await pipe.exec(); } catch (e) { console.warn("[trie] redis mirror failed:", e.message); }
-  console.log(`[trie] loaded ${trie.size} titles from Postgres + mirrored to Redis`);
 }
 
 // Public bootstrap: prefer Redis, fall back to Postgres.
